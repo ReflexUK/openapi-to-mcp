@@ -1,0 +1,52 @@
+{
+  "name": "openapi-to-mcp",
+  "version": "0.1.0",
+  "description": "Turn any OpenAPI spec into a Model Context Protocol (MCP) server — every endpoint becomes a tool, no code required.",
+  "type": "module",
+  "bin": {
+    "openapi-to-mcp": "dist/cli.js"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/cli.ts",
+    "test": "node --import tsx --test test/*.test.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "openapi",
+    "swagger",
+    "llm",
+    "ai",
+    "tools",
+    "claude",
+    "codex"
+  ],
+  "author": "ReflexUK",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "yaml": "^2.6.1",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ReflexUK/openapi-to-mcp.git"
+  }
+}
