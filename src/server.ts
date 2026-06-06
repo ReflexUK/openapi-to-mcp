@@ -15,6 +15,8 @@ export interface ServerOptions {
   baseUrl?: string;
   /** Extra headers sent on every request, e.g. an Authorization token. */
   headers?: Record<string, string>;
+  /** Per-request timeout in milliseconds. Defaults to 30 000 (30 s). */
+  timeoutMs?: number;
   /** Injected for testing; defaults to global fetch. */
   fetchImpl?: typeof fetch;
 }
@@ -27,6 +29,7 @@ export function createServer(doc: OpenApiDocument, options: ServerOptions = {}) 
     );
   }
   const fetchImpl = options.fetchImpl ?? fetch;
+  const timeoutMs = options.timeoutMs ?? 30_000;
   const byName = new Map(doc.operations.map((op) => [op.toolName, op]));
 
   const server = new Server(
@@ -54,22 +57,44 @@ export function createServer(doc: OpenApiDocument, options: ServerOptions = {}) 
     const args = (request.params.arguments ?? {}) as Record<string, unknown>;
     try {
       const req = buildRequest(op, baseUrl, args);
-      const res = await fetchImpl(req.url, {
-        method: req.method,
-        headers: { ...options.headers, ...req.headers },
-        body: req.body,
-      });
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      let res: Response;
+      try {
+        res = await fetchImpl(req.url, {
+          method: req.method,
+          headers: { ...options.headers, ...req.headers },
+          body: req.body,
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timer);
+      }
       const text = await res.text();
       const status = `HTTP ${res.status} ${res.statusText}`;
+      if (!res.ok) {
+        const snippet = text.slice(0, 500);
+        return {
+          isError: true,
+          content: [{ type: "text", text: `${status}\n${snippet}` }],
+        };
+      }
       return {
-        isError: !res.ok,
+        isError: false,
         content: [{ type: "text", text: `${status}\n${text}` }],
       };
     } catch (err) {
+      const msg = (err as Error).message;
+      const isTimeout = msg.includes("abort") || msg.toLowerCase().includes("timeout");
       return {
         isError: true,
         content: [
-          { type: "text", text: `Request failed: ${(err as Error).message}` },
+          {
+            type: "text",
+            text: isTimeout
+              ? `Request timed out after ${timeoutMs}ms`
+              : `Request failed: ${msg}`,
+          },
         ],
       };
     }

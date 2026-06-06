@@ -11,12 +11,13 @@ interface CliArgs {
   spec?: string;
   baseUrl?: string;
   headers: Record<string, string>;
+  timeoutMs: number;
   help: boolean;
   list: boolean;
 }
 
 function parseArgs(argv: string[]): CliArgs {
-  const args: CliArgs = { headers: {}, help: false, list: false };
+  const args: CliArgs = { headers: {}, timeoutMs: 30_000, help: false, list: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     switch (a) {
@@ -33,6 +34,14 @@ function parseArgs(argv: string[]): CliArgs {
       case "--base-url":
         args.baseUrl = argv[++i];
         break;
+      case "--timeout": {
+        const ms = Number(argv[++i]);
+        if (!Number.isFinite(ms) || ms <= 0) {
+          throw new Error(`--timeout must be a positive number of milliseconds`);
+        }
+        args.timeoutMs = ms;
+        break;
+      }
       case "--header": {
         const h = argv[++i] ?? "";
         const idx = h.indexOf(":");
@@ -43,14 +52,13 @@ function parseArgs(argv: string[]): CliArgs {
         if (!a.startsWith("-") && !args.spec) args.spec = a;
     }
   }
-  // Allow a bearer token via env without putting secrets on the command line.
   if (process.env.OPENAPI_MCP_TOKEN && !args.headers.Authorization) {
     args.headers.Authorization = `Bearer ${process.env.OPENAPI_MCP_TOKEN}`;
   }
   return args;
 }
 
-const HELP = `openapi-to-mcp — serve any OpenAPI 3.x spec as an MCP server
+const HELP = `openapi-to-mcp -- serve any OpenAPI 3.x spec as an MCP server
 
 Usage:
   openapi-to-mcp <spec> [options]
@@ -59,6 +67,7 @@ Usage:
 Options:
   --base-url <url>     Override the base URL from the spec's servers list
   --header "K: V"      Add a header to every request (repeatable)
+  --timeout <ms>       Per-request timeout in milliseconds (default: 30000)
   --list               Print the discovered tools and exit (no server)
   -h, --help           Show this help
 
@@ -69,6 +78,7 @@ Examples:
   openapi-to-mcp ./openapi.yaml
   openapi-to-mcp https://api.example.com/openapi.json --header "X-Api-Key: abc"
   openapi-to-mcp petstore.json --list
+  openapi-to-mcp petstore.json --timeout 10000
 `;
 
 async function main() {
@@ -83,7 +93,7 @@ async function main() {
 
   if (args.list) {
     process.stdout.write(
-      `${doc.title} v${doc.version} — ${doc.operations.length} tools\n`,
+      `${doc.title} v${doc.version} -- ${doc.operations.length} tools\n`,
     );
     for (const op of doc.operations) {
       process.stdout.write(`  ${op.toolName}  (${op.method} ${op.path})\n`);
@@ -94,12 +104,12 @@ async function main() {
   const server = createServer(doc, {
     baseUrl: args.baseUrl,
     headers: args.headers,
+    timeoutMs: args.timeoutMs,
   });
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  // Log to stderr so we never corrupt the stdio JSON-RPC stream.
   process.stderr.write(
-    `openapi-to-mcp: serving "${doc.title}" with ${doc.operations.length} tools\n`,
+    `openapi-to-mcp: serving "${doc.title}" with ${doc.operations.length} tools (timeout: ${args.timeoutMs}ms)\n`,
   );
 }
 
