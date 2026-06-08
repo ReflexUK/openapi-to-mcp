@@ -2,8 +2,8 @@
  * Minimal OpenAPI 3.x loader and operation extractor.
  *
  * Supports JSON and YAML specs loaded from a local path or an HTTP(S) URL.
- * We deliberately keep the surface small: we only model what is needed to
- * expose each operation as an MCP tool (method, path, params, request body).
+ * Performs shallow $ref resolution for inline schema references so that
+ * parameter and request body schemas are fully materialized before use.
  */
 import { readFile } from "node:fs/promises";
 import { parse as parseYaml } from "yaml";
@@ -48,7 +48,9 @@ export interface OpenApiDocument {
   operations: Operation[];
 }
 
-const HTTP_METHODS = ["get", "put", "post", "delete", "patch", "options", "head"];
+const HTTP_METHODS = [
+  "get", "put", "post", "delete", "patch", "options", "head",
+];
 
 /** Load and parse a spec from a path or URL. Detects JSON vs YAML by content. */
 export async function loadSpec(source: string): Promise<unknown> {
@@ -92,7 +94,6 @@ export function resolveBaseUrl(
   const serverUrl = servers?.[0]?.url;
   if (serverUrl) {
     if (/^https?:\/\//i.test(serverUrl)) return stripTrailingSlash(serverUrl);
-    // Relative server URL: resolve against the spec URL origin if available.
     if (specUrl && /^https?:\/\//i.test(specUrl)) {
       return stripTrailingSlash(new URL(serverUrl, specUrl).toString());
     }
@@ -107,6 +108,50 @@ function stripTrailingSlash(url: string): string {
   return url.replace(/\/+$/, "");
 }
 
+/**
+ * Resolve a JSON pointer ($ref) of the form "#/components/schemas/Foo" against
+ * the root spec document. Returns the referenced value, or the original object
+ * if the ref cannot be resolved (so callers degrade gracefully).
+ */
+export function resolveRef(ref: string, root: Record<string, any>): unknown {
+  if (!ref.startsWith("#/")) return undefined;
+  const parts = ref.slice(2).split("/").map((p) => p.replace(/~1/g, "/").replace(/~0/g, "~"));
+  let cur: any = root;
+  for (const part of parts) {
+    if (cur == null || typeof cur !== "object") return undefined;
+    cur = cur[part];
+  }
+  return cur;
+}
+
+/**
+ * Recursively inline $ref pointers within a schema using the spec root.
+ * Guards against circular refs with a depth limit.
+ */
+export function inlineRefs(
+  schema: unknown,
+  root: Record<string, any>,
+  depth = 0,
+): unknown {
+  if (depth > 8 || schema == null || typeof schema !== "object") return schema;
+  const s = schema as Record<string, unknown>;
+  if (typeof s["$ref"] === "string") {
+    const resolved = resolveRef(s["$ref"], root);
+    return inlineRefs(resolved, root, depth + 1);
+  }
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(s)) {
+    if (Array.isArray(v)) {
+      out[k] = v.map((item) => inlineRefs(item, root, depth + 1));
+    } else if (v && typeof v === "object") {
+      out[k] = inlineRefs(v, root, depth + 1);
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
 /** Extract a normalized document (title, baseUrl, operations) from a parsed spec. */
 export function extractDocument(
   spec: unknown,
@@ -117,7 +162,7 @@ export function extractDocument(
   }
   const s = spec as Record<string, any>;
   if (!s.paths || typeof s.paths !== "object") {
-    throw new Error("Spec has no `paths` — is this a valid OpenAPI 3.x document?");
+    throw new Error("Spec has no `paths` -- is this a valid OpenAPI 3.x document?");
   }
 
   const seen = new Set<string>();
@@ -136,12 +181,14 @@ export function extractDocument(
       const opParams: OpenApiParameter[] = Array.isArray(op.parameters)
         ? op.parameters
         : [];
-      const parameters = mergeParameters(pathLevelParams, opParams);
+      const parameters = mergeParameters(pathLevelParams, opParams).map((p) => ({
+        ...p,
+        schema: p.schema ? (inlineRefs(p.schema, s) as JsonSchema) : undefined,
+      }));
 
       let toolName: string = op.operationId
         ? sanitizeName(op.operationId)
         : deriveToolName(method, path);
-      // Guarantee uniqueness even if operationIds collide.
       if (seen.has(toolName)) {
         let i = 2;
         while (seen.has(`${toolName}_${i}`)) i++;
@@ -150,7 +197,7 @@ export function extractDocument(
       seen.add(toolName);
 
       const { schema: requestBodySchema, required: requestBodyRequired } =
-        extractRequestBody(op.requestBody);
+        extractRequestBody(op.requestBody, s);
 
       operations.push({
         toolName,
@@ -177,7 +224,6 @@ function sanitizeName(name: string): string {
   return name.replace(/[^a-zA-Z0-9_]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 64);
 }
 
-/** Operation-level params override path-level params with the same name+location. */
 function mergeParameters(
   pathLevel: OpenApiParameter[],
   opLevel: OpenApiParameter[],
@@ -189,17 +235,24 @@ function mergeParameters(
   return [...map.values()];
 }
 
-function extractRequestBody(requestBody: any): {
-  schema?: JsonSchema;
-  required: boolean;
-} {
+function extractRequestBody(
+  requestBody: any,
+  root: Record<string, any>,
+): { schema?: JsonSchema; required: boolean } {
   if (!requestBody || typeof requestBody !== "object") {
     return { required: false };
   }
-  const content = requestBody.content ?? {};
+  // Resolve a top-level $ref on the requestBody itself.
+  const resolved = typeof requestBody["$ref"] === "string"
+    ? (resolveRef(requestBody["$ref"], root) as any ?? requestBody)
+    : requestBody;
+  const content = resolved.content ?? {};
   const json = content["application/json"];
+  const schema = json?.schema
+    ? (inlineRefs(json.schema, root) as JsonSchema)
+    : undefined;
   return {
-    schema: json?.schema,
-    required: Boolean(requestBody.required),
+    schema,
+    required: Boolean(resolved.required),
   };
 }

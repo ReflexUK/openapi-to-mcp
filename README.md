@@ -4,17 +4,17 @@
 [![npm](https://img.shields.io/npm/v/openapi-to-mcp.svg)](https://www.npmjs.com/package/openapi-to-mcp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**Turn any OpenAPI 3.x spec into a [Model Context Protocol](https://modelcontextprotocol.io) server — every endpoint becomes a tool your LLM can call. No glue code.**
+**Turn any OpenAPI 3.x spec into a [Model Context Protocol](https://modelcontextprotocol.io) server -- every endpoint becomes a tool your LLM can call. No glue code.**
 
-Point it at a spec (file or URL), and every operation shows up as an MCP tool in Claude Desktop, Codex, or any MCP client. Path/query/header params and JSON request bodies are mapped automatically.
+Point it at a spec (file or URL), and every operation shows up as an MCP tool in Claude Desktop, Codex, or any MCP client. Path/query/header params and JSON request bodies are mapped automatically. Inline `$ref` schemas are resolved so tools always receive fully-materialized schemas.
 
 ```
-  OpenAPI spec  ──►  openapi-to-mcp  ──►  MCP tools  ──►  Claude / Codex / any MCP client
+  OpenAPI spec  -->  openapi-to-mcp  -->  MCP tools  -->  Claude / Codex / any MCP client
 ```
 
 ## Why
 
-Wiring an existing REST API into an LLM normally means hand-writing a tool wrapper per endpoint. Most APIs already publish an OpenAPI spec — this reads it and generates the tools at runtime, so a 200-endpoint API is one command, not 200 functions.
+Wiring an existing REST API into an LLM normally means hand-writing a tool wrapper per endpoint. Most APIs already publish an OpenAPI spec -- this reads it and generates the tools at runtime, so a 200-endpoint API is one command, not 200 functions.
 
 ## Install
 
@@ -33,7 +33,7 @@ openapi-to-mcp examples/petstore.json --list
 ```
 
 ```
-Swagger Petstore v1.0.0 — 2 tools
+Swagger Petstore v1.0.0 -- 2 tools
   findPetsByStatus  (GET /pet/findByStatus)
   getPetById        (GET /pet/{petId})
 ```
@@ -59,7 +59,7 @@ Add to your MCP client config (Claude Desktop: `claude_desktop_config.json`):
 }
 ```
 
-Restart the client and the API's endpoints appear as callable tools.
+Restart the client and the API endpoints appear as callable tools.
 
 ## Authentication
 
@@ -80,6 +80,7 @@ openapi-to-mcp ./api.yaml --header "X-Api-Key: abc123" --header "X-Org: acme"
 | `<spec>` / `--spec <path\|url>` | OpenAPI 3.x spec, JSON or YAML, local or remote |
 | `--base-url <url>` | Override the base URL from the spec's `servers` |
 | `--header "K: V"` | Add a header to every request (repeatable) |
+| `--timeout <ms>` | Per-request timeout in milliseconds (default: `30000`) |
 | `--list` | Print discovered tools and exit |
 | `-h, --help` | Show help |
 
@@ -94,21 +95,25 @@ import { loadSpec, extractDocument, createServer } from "openapi-to-mcp";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
 const doc = extractDocument(await loadSpec("./api.yaml"), { specUrl: "./api.yaml" });
-const server = createServer(doc, { headers: { "X-Api-Key": process.env.KEY! } });
+const server = createServer(doc, {
+  headers: { "X-Api-Key": process.env.KEY! },
+  timeoutMs: 10_000,
+});
 await server.connect(new StdioServerTransport());
 ```
 
 ## How it works
 
 1. **Load** the spec from a path or URL (JSON or YAML).
-2. **Extract** every `path` × HTTP method into a normalized operation, deriving a stable tool name from `operationId` (or `method_path`).
-3. **Map** path/query/header params and the JSON request body into a single JSON Schema per tool.
-4. **Serve** over MCP stdio. A tool call rebuilds the HTTP request — substituting path params, appending query strings, setting headers — and returns the response.
+2. **Resolve** inline `$ref` pointers in parameter and request body schemas so tools always get complete type information.
+3. **Extract** every `path` x HTTP method into a normalized operation, deriving a stable tool name from `operationId` (or `method_path`).
+4. **Map** path/query/header params and the JSON request body into a single JSON Schema per tool.
+5. **Serve** over MCP stdio. A tool call rebuilds the HTTP request -- substituting path params, appending query strings, setting headers -- and returns the response. Requests are aborted after `--timeout` ms (default 30s).
 
 ## Limitations
 
 - OpenAPI **3.x** only (not Swagger 2.0).
-- `$ref`s are read as-is; deeply external `$ref` resolution is not performed.
+- Only local (same-document) `$ref`s are resolved. External file or URL refs are not fetched.
 - JSON request bodies only (`application/json`).
 - Cookie parameters are ignored.
 
@@ -124,4 +129,4 @@ npm run build  # tsc -> dist/
 
 ## License
 
-[MIT](LICENSE) © ReflexUK
+[MIT](LICENSE) (c) ReflexUK
